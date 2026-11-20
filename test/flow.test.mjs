@@ -76,7 +76,7 @@ test('Bet and Raise happen on chip placement; Call closes only betting round; wi
     assert.equal(again.room.players[0].balance, 119800);
     service.child.kill();
     await new Promise(resolve => service.child.once('exit', resolve));
-    service = await start(port, dataDir);
+    service = await start(await openPort(), dataDir);
     const restored = await request(service.origin, `/api/rooms/${code}`, a);
     assert.equal(restored.room.players[0].balance, 119800);
     assert.equal(restored.room.fees, 200);
