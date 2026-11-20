@@ -32,7 +32,7 @@ function publicRoom(room, seat) {
   return {
     code: room.code, seat, initial: room.initial, pot: room.pot, fees: room.fees,
     hand: room.hand, bettingRound: room.bettingRound, contributions: room.contributions,
-    responder: room.responder, aggressor: room.aggressor, folded: room.folded,
+    responder: room.responder, aggressor: room.aggressor, folded: room.folded, allIn: room.allIn,
     pending: room.pending, revision: room.revision,
     processedIds: room.processed.filter(p => p.seat === seat).slice(-20).map(p => p.id),
     players: room.players.map(p => p ? { name: p.name, balance: p.balance } : null),
@@ -45,6 +45,22 @@ function addHistory(room, kind, actor, text, extra = {}) {
     balancesAfter: room.players.map(p => p?.balance ?? null), ...extra });
 }
 function fee(pot) { return Math.floor(pot * 5 / 1000); }
+function refundUncalled(room) {
+  const unmatched = Math.abs(room.contributions[0] - room.contributions[1]);
+  if (!unmatched) return;
+  const owner = room.contributions[0] > room.contributions[1] ? 0 : 1;
+  room.players[owner].balance += unmatched;
+  room.pot -= unmatched;
+  room.contributions[owner] -= unmatched;
+  addHistory(room, 'refund', owner, `คืน Bet ที่ยังไม่มีการ Call ${unmatched.toLocaleString('en-US')} ชิป ให้ ${room.players[owner].name}`, { amount: unmatched });
+}
+function closeBettingRound(room) {
+  refundUncalled(room);
+  room.bettingRound++;
+  room.contributions = [0, 0];
+  room.aggressor = null;
+  room.responder = null;
+}
 function authenticate(room, request) {
   const value = request.headers.authorization || '';
   if (!value.startsWith('Bearer ')) throw new Error('กรุณาเข้าห้องอีกครั้ง');
@@ -102,13 +118,16 @@ function applyAction(room, seat, action) {
   const other = 1 - seat;
   if (!room.players[1]) throw new Error('รอผู้เล่นคนที่ 2 เข้าห้อง');
   if (room.pending && !['confirm', 'reject', 'cancel_claim'].includes(action.type)) throw new Error('รอการยืนยันผู้ชนะ');
-  if (action.type === 'bet') {
-    const value = action.value;
-    if (!DENOMINATIONS.has(value)) throw new Error('มูลค่าชิปไม่ถูกต้อง');
+  if (action.type === 'bet' || action.type === 'all_in') {
+    const value = action.type === 'all_in' ? room.players[seat].balance : action.value;
+    if (action.type === 'bet' && !DENOMINATIONS.has(value)) throw new Error('มูลค่าชิปไม่ถูกต้อง');
     if (room.folded !== null) throw new Error('มีผู้เล่นหมอบแล้ว');
+    if (room.allIn.some(Boolean) || room.players[other].balance === 0) throw new Error('มีผู้เล่น All-in หรือชิปหมดแล้ว ให้ Call หรือขอจบตาเล่น');
+    if (!value) throw new Error('ชิปคงเหลือไม่พอ');
     if (room.players[seat].balance < value) throw new Error('ชิปคงเหลือไม่พอ');
     const before = room.contributions[seat];
     room.players[seat].balance -= value;
+    if (room.players[seat].balance === 0) room.allIn[seat] = true;
     room.contributions[seat] += value;
     room.pot += value;
     let label = 'Bet';
@@ -124,36 +143,33 @@ function applyAction(room, seat, action) {
     } else {
       label = 'เพิ่มชิปรอตอบ';
     }
-    addHistory(room, 'bet', seat, `${room.players[seat].name} ${label} ${value.toLocaleString('en-US')} ชิป`, { amount: value });
+    if (action.type === 'all_in') label = 'All-in';
+    addHistory(room, action.type, seat, `${room.players[seat].name} ${label} ${value.toLocaleString('en-US')} ชิป`, { amount: value });
+    if (room.allIn[seat] && room.responder === seat) closeBettingRound(room);
   } else if (action.type === 'call') {
     if (room.folded !== null || room.responder !== seat) throw new Error('ยังไม่ใช่ตาที่ Call ได้');
     const due = room.contributions[other] - room.contributions[seat];
     if (due < 0) throw new Error('ยอดที่วางสูงกว่าอีกฝ่ายแล้ว');
-    if (room.players[seat].balance < due) throw new Error('ชิปคงเหลือไม่พอสำหรับ Call');
-    room.players[seat].balance -= due;
-    room.contributions[seat] += due;
-    room.pot += due;
-    addHistory(room, 'call', seat, `${room.players[seat].name} Call ${due.toLocaleString('en-US')} ชิป · จบรอบเบ็ต ${room.bettingRound}`, { amount: due });
-    room.bettingRound++;
-    room.contributions = [0, 0];
-    room.aggressor = null;
-    room.responder = null;
+    const paid = Math.min(due, room.players[seat].balance);
+    room.players[seat].balance -= paid;
+    if (room.players[seat].balance === 0) room.allIn[seat] = true;
+    room.contributions[seat] += paid;
+    room.pot += paid;
+    addHistory(room, 'call', seat, `${room.players[seat].name} ${paid < due ? 'Call All-in' : 'Call'} ${paid.toLocaleString('en-US')} ชิป · จบรอบเบ็ต ${room.bettingRound}`, { amount: paid });
+    closeBettingRound(room);
   } else if (action.type === 'fold') {
     if (room.folded !== null || room.pot === 0) throw new Error('ยังหมอบไม่ได้ในตอนนี้');
-    const unmatched = Math.abs(room.contributions[0] - room.contributions[1]);
-    if (unmatched) {
-      const owner = room.contributions[0] > room.contributions[1] ? 0 : 1;
-      room.players[owner].balance += unmatched;
-      room.pot -= unmatched;
-      room.contributions[owner] -= unmatched;
-      addHistory(room, 'refund', owner, `คืน Bet ที่ยังไม่มีการ Call ${unmatched.toLocaleString('en-US')} ชิป ให้ ${room.players[owner].name}`, { amount: unmatched });
-    }
+    refundUncalled(room);
     room.folded = seat;
     addHistory(room, 'fold', seat, `${room.players[seat].name} หมอบ`);
-  } else if (action.type === 'claim') {
-    if (room.pending || (room.pot === 0 && room.folded === null) || room.folded === seat || (room.responder !== null && room.folded === null)) throw new Error('ยังขอรับกองกลางไม่ได้');
-    room.pending = { claimant: seat, pot: room.pot, fee: fee(room.pot), net: room.pot - fee(room.pot) };
-    addHistory(room, 'claim', seat, `${room.players[seat].name} กด I'm Win และรอการยืนยัน`);
+  } else if (action.type === 'claim' || action.type === 'claim_tie') {
+    const tie = action.type === 'claim_tie';
+    if (room.pending || (room.pot === 0 && room.folded === null) || room.responder !== null && room.folded === null || (tie && room.folded !== null) || (!tie && room.folded === seat)) throw new Error('ยังขอรับกองกลางไม่ได้');
+    const net = room.pot - fee(room.pot);
+    const shares = [Math.floor(net / 2), Math.floor(net / 2)];
+    shares[(room.hand - 1) % 2] += net % 2;
+    room.pending = { outcome: tie ? 'tie' : 'win', claimant: seat, pot: room.pot, fee: fee(room.pot), net, ...(tie ? { shares } : {}) };
+    addHistory(room, action.type, seat, `${room.players[seat].name} กด ${tie ? 'เสมอ' : "I'm Win"} และรอการยืนยัน`);
   } else if (action.type === 'reject') {
     if (!room.pending || room.pending.claimant === seat) throw new Error('ไม่มีผลให้ปฏิเสธ');
     room.pending = null;
@@ -164,19 +180,23 @@ function applyAction(room, seat, action) {
     addHistory(room, 'cancel_claim', seat, `${room.players[seat].name} ถอนคำขอรับกองกลาง`);
   } else if (action.type === 'confirm') {
     if (!room.pending || room.pending.claimant === seat) throw new Error('ไม่มีผลให้ยืนยัน');
-    const winner = room.pending.claimant;
     const charge = fee(room.pot);
     const net = room.pot - charge;
-    room.players[winner].balance += net;
+    if (room.pending.outcome === 'tie') {
+      room.players[0].balance += room.pending.shares[0];
+      room.players[1].balance += room.pending.shares[1];
+    } else room.players[room.pending.claimant].balance += net;
     room.fees += charge;
     room.pot = 0;
-    addHistory(room, 'settle', seat, `${room.players[seat].name} ยืนยัน · ${room.players[winner].name} รับ ${net.toLocaleString('en-US')} ชิป (ค่าธรรมเนียม ${charge.toLocaleString('en-US')})`, { winner, fee: charge, amount: net });
+    if (room.pending.outcome === 'tie') addHistory(room, 'settle_tie', seat, `${room.players[seat].name} ยืนยันเสมอ · แบ่ง ${room.pending.shares[0].toLocaleString('en-US')} / ${room.pending.shares[1].toLocaleString('en-US')} ชิป (ค่าธรรมเนียม ${charge.toLocaleString('en-US')})`, { shares: room.pending.shares, fee: charge });
+    else addHistory(room, 'settle', seat, `${room.players[seat].name} ยืนยัน · ${room.players[room.pending.claimant].name} รับ ${net.toLocaleString('en-US')} ชิป (ค่าธรรมเนียม ${charge.toLocaleString('en-US')})`, { winner: room.pending.claimant, fee: charge, amount: net });
     room.hand++;
     room.bettingRound = 1;
     room.contributions = [0, 0];
     room.aggressor = null;
     room.responder = null;
     room.folded = null;
+    room.allIn = [false, false];
     room.pending = null;
   } else throw new Error('คำสั่งไม่ถูกต้อง');
   checkConservation(room);
@@ -212,7 +232,7 @@ async function route(request, response) {
         const code = roomCode(), token = secret();
         const room = { code, initial, players: [{ name, token, balance: initial }, null], pot: 0, fees: 0,
           hand: 1, bettingRound: 1, contributions: [0, 0], responder: null, aggressor: null,
-          folded: null, pending: null, revision: 1, history: [], processed: [] };
+          folded: null, allIn: [false, false], pending: null, revision: 1, history: [], processed: [] };
         addHistory(room, 'create', 0, `${name} สร้างห้อง · เริ่มต้นคนละ ${initial.toLocaleString('en-US')} ชิป`);
         rooms.set(code, room);
         try { await save(); } catch (error) { rooms.delete(code); throw error; }
@@ -268,7 +288,7 @@ async function route(request, response) {
 }
 try {
   const data = JSON.parse(await readFile(DATA_FILE, 'utf8'));
-  for (const room of data) rooms.set(room.code, room);
+  for (const room of data) { room.allIn ??= [false, false]; rooms.set(room.code, room); }
 } catch (error) {
   if (error.code !== 'ENOENT') throw error;
 }
