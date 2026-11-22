@@ -10,16 +10,17 @@
 </head>
 <body>
   <div class="shell">
-    <header class="top"><div><div class="brand">POT<span>MATE</span></div><div class="subtitle">ตัวช่วยนับชิปสำหรับผู้เล่น 2 คน · เงินสมมติ</div></div><span class="tag">ไม่ใช่เกมไพ่หรือเงินจริง</span></header>
+    <header class="top"><div><div class="brand">POT<span>MATE</span></div><div class="subtitle">ตัวช่วยนับชิปสำหรับผู้เล่น 2–4 คน · เงินสมมติ</div></div><span class="tag">ไม่ใช่เกมไพ่หรือเงินจริง</span></header>
     <main>
       <section id="entry" class="entry-grid">
-        <form id="createForm" class="panel"><div class="step">01 / สร้างห้อง</div><h1>เริ่มตาเล่นใหม่</h1><p>กำหนดยอดชิปเริ่มต้นเท่ากันทั้งสองฝ่าย แล้วส่งรหัสห้องให้อีกคน</p><label for="createName">ชื่อของคุณ</label><input id="createName" maxlength="18" required placeholder="เช่น คุณ A" autocomplete="nickname"><label for="initial">ชิปเริ่มต้นต่อคน</label><input id="initial" type="number" min="1000" max="1000000000" step="1000" value="2000000" required><button class="button primary full" type="submit">สร้างห้อง</button></form>
+        <form id="createForm" class="panel"><div class="step">01 / สร้างห้อง</div><h1>เริ่มตาเล่นใหม่</h1><p>กำหนดยอดชิปเริ่มต้นเท่ากันทุกคน แล้วส่งรหัสห้องให้เพื่อนอีก 1–3 คน</p><label for="createName">ชื่อของคุณ</label><input id="createName" maxlength="18" required placeholder="เช่น คุณ A" autocomplete="nickname"><label for="initial">ชิปเริ่มต้นต่อคน</label><input id="initial" type="number" min="1000" max="1000000000" step="1000" value="2000000" required><button class="button primary full" type="submit">สร้างห้อง</button></form>
         <form id="joinForm" class="panel"><div class="step">02 / เข้าร่วม</div><h2>มีรหัสห้องแล้ว?</h2><p>กรอกรหัส 8 ตัวจากผู้สร้างห้องเพื่อร่วมเล่นในอุปกรณ์ของคุณ</p><label for="joinName">ชื่อของคุณ</label><input id="joinName" maxlength="18" required placeholder="เช่น คุณ B" autocomplete="nickname"><label for="joinCode">รหัสห้อง</label><input id="joinCode" maxlength="8" required placeholder="XXXXXXXX" class="code-input" autocapitalize="characters"><button class="button secondary full" type="submit">เข้าร่วมห้อง</button></form>
       </section>
       <section id="room" hidden>
         <div class="roombar panel"><div><div class="eyebrow">รหัสห้อง</div><div class="code-line"><strong id="roomCode"></strong><button id="copy" class="button small" type="button">คัดลอก</button></div></div><div class="room-actions"><div id="connection" class="connection">กำลังเชื่อมต่อ</div><button id="leave" class="button small ghost" type="button">ออกจากห้องบนเครื่องนี้</button></div></div>
         <div class="roundbar"><span id="round"></span><span id="turnStatus"></span></div>
-        <div class="table-grid"><section id="player0" class="panel player"></section><section class="panel center"><div id="potDrop" class="pot"><div class="pot-title">POT · กองกลาง</div><div id="potAmount" class="pot-amount">0</div><div id="feePreview" class="pot-fee"></div><div class="pot-hint">ลากหรือแตะชิปเพื่อ Bet ทันที</div></div><div class="pot-rule">Call ปิดรอบเบ็ต แต่ pot ยังคงอยู่จนยืนยันผล<br>หลัง All-in กด I'm Win หรือ เสมอ แล้วให้อีกฝ่ายยืนยันก่อนจ่าย pot</div></section><section id="player1" class="panel player"></section></div>
+        <div class="table-grid"><section id="player0" class="panel player"></section><section class="panel center"><div id="potDrop" class="pot"><div class="pot-title">POT · กองกลาง</div><div id="potAmount" class="pot-amount">0</div><div id="feePreview" class="pot-fee"></div><div class="pot-hint">ลากหรือแตะชิปเพื่อ Bet ทันที</div></div><div class="pot-rule">ทุกคนต้องตอบ Bet/Raise ก่อนเริ่มรอบใหม่<br>กองกลางจ่ายเมื่อผู้เล่นทุกคนยืนยันผล</div></section><section id="player1" class="panel player"></section><section id="player2" class="panel player"></section><section id="player3" class="panel player"></section></div>
+        <section id="resultEditor" class="panel decision" hidden></section>
         <section id="decision" class="panel decision" hidden></section>
         <section class="panel ledger"><div class="ledger-head"><h2>ประวัติธุรกรรม</h2><span id="feesTotal"></span></div><div id="history"></div></section>
       </section>
