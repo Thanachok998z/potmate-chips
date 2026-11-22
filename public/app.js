@@ -13,7 +13,7 @@ let resultHand = null;
 const playerCount = () => room.players.filter(Boolean).length;
 const activeSeats = () => room.players.map((player, seat) => player && !room.foldedSeats[seat] ? seat : -1).filter(seat => seat >= 0);
 const maxBet = () => Math.max(...room.contributions);
-const canBet = seat => playerCount() >= 2 && !room.pending && !room.foldedSeats[seat] && !room.allIn[seat] && room.players[seat].balance > 0 && (room.responder === null || room.responder === seat) && room.players.some((player, other) => other !== seat && player && !room.foldedSeats[other] && !room.allIn[other] && player.balance > 0);
+const canBet = seat => playerCount() >= 2 && !room.pending && room.waitingNext === null && !room.foldedSeats[seat] && !room.allIn[seat] && room.players[seat].balance > 0 && (room.responder === seat || room.responder === null && (room.turn === null || room.turn === seat)) && room.players.some((player, other) => other !== seat && player && !room.foldedSeats[other] && !room.allIn[other] && player.balance > 0);
 
 function notify(text, error = false) {
   const el = $('message');
@@ -54,7 +54,7 @@ function drawPlayer(seat) {
   const avatar = document.createElement('div'); avatar.className = 'avatar'; avatar.textContent = String(seat + 1);
   const info = document.createElement('div');
   const name = document.createElement('div'); name.className = 'player-name'; name.textContent = p?.name || `รอผู้เล่น ${seat + 1}`;
-  const role = document.createElement('div'); role.className = 'player-role'; role.textContent = p ? `${isMe ? 'คุณ' : `ผู้เล่น ${seat + 1}`}${room.foldedSeats[seat] ? ' · หมอบ' : room.allIn[seat] ? ' · ALL-IN' : p.balance === 0 ? ' · ชิปหมด' : ''}${room.responder === seat ? ' · ถึงตาตอบ' : ''}` : 'ยังไม่มีผู้เล่น';
+  const role = document.createElement('div'); role.className = 'player-role'; role.textContent = p ? `${isMe ? 'คุณ' : `ผู้เล่น ${seat + 1}`}${room.foldedSeats[seat] ? ' · หมอบ' : room.allIn[seat] ? ' · ALL-IN' : p.balance === 0 ? ' · ชิปหมด' : ''}${room.responder === seat || room.turn === seat ? ' · ถึงตา' : ''}` : 'ยังไม่มีผู้เล่น';
   info.append(name, role); head.append(avatar, info); target.append(head);
   const balance = document.createElement('div'); balance.className = 'balance'; balance.textContent = p ? format(p.balance) : '—'; target.append(balance);
   const caption = document.createElement('div'); caption.className = 'caption'; caption.textContent = `ชิปคงเหลือ · รอบเบ็ตนี้วาง ${format(room.contributions[seat])}`; target.append(caption);
@@ -82,9 +82,11 @@ function drawPlayer(seat) {
     const due = maxBet() - room.contributions[seat];
     controls.append(button(`${due > p.balance ? 'Call All-in' : 'Call'} ${format(Math.min(due, p.balance))}`, 'call', busy || !!session?.pending, 'primary'));
   }
+  if (room.waitingNext === seat) controls.append(button('Next → ส่งตาให้คนถัดไป', 'next', busy || !!session?.pending, 'primary'));
+  else controls.append(button('Check', 'check', !canBet(seat) || room.responder !== null || room.checkedSeats[seat] || busy || !!session?.pending));
   controls.append(button(`All-in ${format(p.balance)}`, 'all_in', !canBet(seat) || busy || !!session?.pending));
   controls.append(button('หมอบ', 'fold', room.pot === 0 || room.foldedSeats[seat] || room.allIn[seat] || room.responder !== seat || !!room.pending || busy || !!session?.pending, 'danger'));
-  const canClaim = playerCount() >= 2 && (room.pot > 0 || activeSeats().length === 1) && !room.foldedSeats[seat] && room.responder === null && !room.pending && !busy && !session?.pending;
+  const canClaim = playerCount() >= 2 && (room.pot > 0 || activeSeats().length === 1) && !room.foldedSeats[seat] && room.responder === null && room.turn === null && room.waitingNext === null && !room.pending && !busy && !session?.pending;
   controls.append(button("I'm Win", 'open_win', !canClaim));
   controls.append(button('ฉันเสมอ', 'open_tie', !canClaim || activeSeats().length < 2 || room.pot === 0));
   target.append(controls);
@@ -104,7 +106,7 @@ function drawDecision() {
   target.append(title, copy, controls);
 }
 function openResult(mode) {
-  if (!room || room.pending || room.responder !== null) return;
+  if (!room || room.pending || room.responder !== null || room.waitingNext !== null || room.turn !== null) return;
   resultMode = mode; resultHand = room.hand;
   resultSelection = room.pots.map(pot => {
     const preferred = pot.eligible.includes(room.seat) ? room.seat : pot.eligible[0];
@@ -116,7 +118,7 @@ function openResult(mode) {
 }
 function drawResultEditor() {
   const target = $('resultEditor'); target.replaceChildren();
-  if (!resultMode || !room || room.pending || room.hand !== resultHand) { target.hidden = true; return; }
+  if (!resultMode || !room || room.pending || room.turn !== null || room.waitingNext !== null || room.responder !== null || room.hand !== resultHand) { target.hidden = true; return; }
   target.hidden = false;
   const heading = document.createElement('h2'); heading.textContent = resultMode === 'tie' ? 'เลือกคนที่เสมอ' : 'เลือกผู้ชนะ';
   const help = document.createElement('p'); help.textContent = 'เลือกผู้รับชิปในแต่ละกอง หากมีหลายคนเสมอกันให้เลือกหลายชื่อ ทุกคนในห้องต้องยืนยันก่อนแจกชิป';
@@ -161,7 +163,7 @@ function render() {
   $('potAmount').textContent = format(room.pot);
   $('feePreview').textContent = `ค่าธรรมเนียมเมื่อจบตาเล่น ${format(Math.floor(room.pot * 0.005))}`;
   $('feesTotal').textContent = `ค่าธรรมเนียมสะสม ${format(room.fees)} ชิป`;
-  $('turnStatus').textContent = playerCount() < 2 ? 'รอผู้เล่นคนที่ 2 เข้าห้อง' : room.pending ? `รอการยืนยันผล ${(room.pending.confirmed || []).length}/${playerCount()}` : room.responder === room.seat ? `ถึงตาคุณ · Call ${format(Math.min(maxBet() - room.contributions[room.seat], room.players[room.seat].balance))} หรือ Raise/หมอบ` : room.responder !== null ? `รอ ${room.players[room.responder].name} ตอบเบ็ต` : activeSeats().length === 1 ? 'เหลือผู้เล่นคนเดียว · เสนอผลเพื่อจบตาเล่น' : 'เปิด Bet หรือเสนอผลได้';
+  $('turnStatus').textContent = playerCount() < 2 ? 'รอผู้เล่นคนที่ 2 เข้าห้อง' : room.pending ? `รอการยืนยันผล ${(room.pending.confirmed || []).length}/${playerCount()}` : room.waitingNext === room.seat ? 'คุณ Check แล้ว · กด Next เพื่อส่งตา' : room.waitingNext !== null ? `รอ ${room.players[room.waitingNext].name} กด Next` : room.responder === room.seat ? `ถึงตาคุณ · Call ${format(Math.min(maxBet() - room.contributions[room.seat], room.players[room.seat].balance))} หรือ Raise/หมอบ` : room.responder !== null ? `รอ ${room.players[room.responder].name} ตอบเบ็ต` : room.turn === room.seat ? 'ถึงตาคุณ · Bet หรือ Check' : room.turn !== null ? `รอ ${room.players[room.turn].name} Bet หรือ Check` : activeSeats().length === 1 ? 'เหลือผู้เล่นคนเดียว · เสนอผลเพื่อจบตาเล่น' : 'เปิด Bet หรือ Check ได้';
   for (let seat = 0; seat < 4; seat++) drawPlayer(seat);
   drawDecision(); drawResultEditor(); drawHistory();
 }

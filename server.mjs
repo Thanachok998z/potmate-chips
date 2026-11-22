@@ -33,7 +33,8 @@ function publicRoom(room, seat) {
   return {
     code: room.code, seat, initial: room.initial, pot: room.pot, fees: room.fees,
     hand: room.hand, bettingRound: room.bettingRound, contributions: room.contributions,
-    responder: room.responder, aggressor: room.aggressor, folded: room.folded, foldedSeats: room.foldedSeats,
+    responder: room.responder, aggressor: room.aggressor, turn: room.turn, waitingNext: room.waitingNext,
+    checkedSeats: room.checkedSeats, folded: room.folded, foldedSeats: room.foldedSeats,
     allIn: room.allIn, pots: pots(room),
     pending: room.pending, revision: room.revision,
     processedIds: room.processed.filter(p => p.seat === seat).slice(-20).map(p => p.id),
@@ -83,6 +84,9 @@ function closeBettingRound(room) {
   room.aggressor = null;
   room.responder = null;
   room.pendingSeats = [];
+  room.turn = null;
+  room.waitingNext = null;
+  room.checkedSeats = Array(room.players.length).fill(false);
 }
 function authenticate(room, request) {
   const value = request.headers.authorization || '';
@@ -139,10 +143,26 @@ function checkConservation(room) {
 function applyAction(room, seat, action) {
   if (joined(room).length < 2) throw new Error('รอผู้เล่นอย่างน้อย 2 คนเข้าห้อง');
   if (room.pending && !['confirm', 'reject', 'cancel_claim'].includes(action.type)) throw new Error('รอการยืนยันผล');
-  if (action.type === 'bet' || action.type === 'all_in') {
+  if (action.type === 'check') {
+    if (room.responder !== null || room.waitingNext !== null || (room.turn !== null && room.turn !== seat) || room.checkedSeats[seat] || !canAct(room, seat) || responders(room, seat).length === 0) throw new Error('ยังไม่ถึงตา Check');
+    room.checkedSeats[seat] = true;
+    room.waitingNext = seat;
+    room.turn = seat;
+    room.handStarted = true;
+    addHistory(room, 'check', seat, `${room.players[seat].name} Check · รอกด Next`);
+  } else if (action.type === 'next') {
+    if (room.waitingNext !== seat) throw new Error('รอผู้ที่ Check กด Next');
+    const next = Array.from({ length: room.players.length - 1 }, (_, index) => (seat + index + 1) % room.players.length)
+      .find(other => room.players[other] && canAct(room, other) && !room.checkedSeats[other]);
+    addHistory(room, 'next', seat, next === undefined ? `${room.players[seat].name} กด Next · จบรอบ Check` : `${room.players[seat].name} กด Next · ถึงตา ${room.players[next].name}`);
+    if (next === undefined) closeBettingRound(room);
+    else { room.waitingNext = null; room.turn = next; }
+  } else if (action.type === 'bet' || action.type === 'all_in') {
     const value = action.type === 'all_in' ? room.players[seat].balance : action.value;
     if (action.type === 'bet' && !DENOMINATIONS.has(value)) throw new Error('มูลค่าชิปไม่ถูกต้อง');
     if (!canAct(room, seat) || !value || room.players[seat].balance < value) throw new Error('ชิปคงเหลือไม่พอหรือผู้เล่นหมอบแล้ว');
+    if (room.waitingNext !== null) throw new Error('รอผู้ที่ Check กด Next');
+    if (room.responder === null && room.turn !== null && room.turn !== seat) throw new Error('ยังไม่ถึงตา Bet');
     if (room.responder !== null && room.responder !== seat) throw new Error('รอผู้เล่นที่ต้องตอบเบ็ต');
     if (room.responder === null && responders(room, seat).length === 0) throw new Error('ไม่มีผู้เล่นที่ตอบเบ็ตได้');
     const previousMaximum = Math.max(...room.contributions);
@@ -151,6 +171,8 @@ function applyAction(room, seat, action) {
     room.invested[seat] += value;
     room.pot += value;
     room.handStarted = true;
+    room.turn = null;
+    room.checkedSeats = Array(room.players.length).fill(false);
     if (room.players[seat].balance === 0) room.allIn[seat] = true;
     let label = 'เพิ่มชิปรอตอบ';
     if (room.contributions[seat] > previousMaximum || room.responder === null) {
@@ -186,7 +208,7 @@ function applyAction(room, seat, action) {
     if (room.responder === null || active(room).length === 1) closeBettingRound(room);
   } else if (action.type === 'claim' || action.type === 'claim_tie') {
     const tie = action.type === 'claim_tie';
-    if (room.pending || room.responder !== null || room.foldedSeats[seat] || (room.pot === 0 && active(room).length > 1)) throw new Error('ยังขอรับกองกลางไม่ได้');
+    if (room.pending || room.responder !== null || room.waitingNext !== null || room.turn !== null || room.foldedSeats[seat] || (room.pot === 0 && active(room).length > 1)) throw new Error('ยังขอรับกองกลางไม่ได้');
     const layers = pots(room);
     const defaultWinners = tie && active(room).length === 2 ? layers.map(pot => [...pot.eligible]) : layers.map(() => [seat]);
     const winners = action.winners ?? defaultWinners;
@@ -230,6 +252,9 @@ function applyAction(room, seat, action) {
       room.contributions = Array(room.players.length).fill(0);
       room.invested = Array(room.players.length).fill(0);
       room.pendingSeats = [];
+      room.turn = null;
+      room.waitingNext = null;
+      room.checkedSeats = Array(room.players.length).fill(false);
       room.aggressor = null;
       room.responder = null;
       room.folded = null;
@@ -272,7 +297,8 @@ async function route(request, response) {
         const code = roomCode(), token = secret();
         const room = { code, initial, players: [{ name, token, balance: initial }, null, null, null], pot: 0, fees: 0,
           hand: 1, bettingRound: 1, contributions: [0, 0, 0, 0], invested: [0, 0, 0, 0],
-          responder: null, pendingSeats: [], aggressor: null, folded: null, foldedSeats: [false, false, false, false],
+          responder: null, pendingSeats: [], turn: null, waitingNext: null, checkedSeats: [false, false, false, false],
+          aggressor: null, folded: null, foldedSeats: [false, false, false, false],
           allIn: [false, false, false, false], handStarted: false, pending: null, revision: 1, history: [], processed: [] };
         addHistory(room, 'create', 0, `${name} สร้างห้อง · เริ่มต้นคนละ ${initial.toLocaleString('en-US')} ชิป`);
         rooms.set(code, room);
@@ -324,7 +350,7 @@ async function route(request, response) {
     }
     return send(response, 404, { error: 'ไม่พบรายการ' });
   } catch (error) {
-    const userErrors = /ไม่พบ|ไม่ถูกต้อง|ไม่พอ|ไม่ได้|รอ|ต้อง|ครบ|ภายหลัง|ใหญ่|หมอบ|ไม่มี|สิทธิ์|คงเหลือ|สูงกว่า/.test(error.message);
+    const userErrors = /ไม่พบ|ไม่ถูกต้อง|ไม่พอ|ไม่ได้|รอ|ต้อง|ครบ|ภายหลัง|ใหญ่|หมอบ|ไม่มี|สิทธิ์|คงเหลือ|สูงกว่า|ถึงตา/.test(error.message);
     if (!userErrors) console.error(error);
     return send(response, userErrors ? 400 : 500, { error: userErrors ? error.message : 'ระบบขัดข้อง กรุณาลองใหม่' });
   }
@@ -339,6 +365,9 @@ try {
     room.foldedSeats = [...(room.foldedSeats ?? []), ...Array(MAX_PLAYERS).fill(false)].slice(0, MAX_PLAYERS);
     if (room.folded !== null) room.foldedSeats[room.folded] = true;
     room.pendingSeats ??= room.responder === null ? [] : [room.responder];
+    room.turn ??= null;
+    room.waitingNext ??= null;
+    room.checkedSeats = [...(room.checkedSeats ?? []), ...Array(MAX_PLAYERS).fill(false)].slice(0, MAX_PLAYERS);
     room.handStarted ??= room.pot > 0 || room.folded !== null;
     if (room.pending) {
       room.pending.confirmed ??= [room.pending.claimant];

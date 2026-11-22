@@ -305,3 +305,43 @@ test('a third player joins only between hands and receives the same starting sta
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test('Check waits for Next, passes the chance to Bet, and a full check cycle keeps the pot', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'potmate-check-'));
+  const service = await start(await openPort(), dataDir);
+  try {
+    const { origin } = service;
+    const created = await request(origin, '/api/rooms', null, { name: 'A', initial: 10000 });
+    const code = created.room.code;
+    const tokens = [created.token];
+    for (const name of ['B', 'C']) tokens.push((await request(origin, `/api/rooms/${code}/join`, null, { name })).token);
+    let seq = 0;
+    const act = (seat, type, value) => request(origin, `/api/rooms/${code}/actions`, tokens[seat], { id: `check-action-${++seq}`, type, value });
+    let result = await act(0, 'check');
+    assert.equal(result.room.waitingNext, 0);
+    await assert.rejects(act(1, 'bet', 1000), /Next|รอ/);
+    result = await act(0, 'next');
+    assert.equal(result.room.turn, 1);
+    await assert.rejects(act(2, 'bet', 1000), /ตา|รอ/);
+    await act(1, 'check');
+    result = await act(1, 'next');
+    assert.equal(result.room.turn, 2);
+    result = await act(2, 'bet', 1000);
+    assert.equal(result.room.responder, 0);
+    await act(0, 'call');
+    result = await act(1, 'call');
+    assert.equal(result.room.pot, 3000);
+    assert.equal(result.room.bettingRound, 2);
+    for (const seat of [0, 1, 2]) {
+      await act(seat, 'check');
+      result = await act(seat, 'next');
+    }
+    assert.equal(result.room.pot, 3000);
+    assert.equal(result.room.bettingRound, 3);
+    assert.equal(result.room.turn, null);
+  } finally {
+    service.child.kill();
+    await new Promise(resolve => service.child.once('exit', resolve));
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
